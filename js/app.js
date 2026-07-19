@@ -475,59 +475,153 @@ function escapeHTML(s) {
 }
 
 /* ---------- DASHBOARD ---------- */
+let charts = {};
+function destroyChart(key) { if (charts[key]) { charts[key].destroy(); delete charts[key]; } }
+
+function cssVar(name) {
+  return getComputedStyle(document.body).getPropertyValue(name).trim();
+}
+
 function renderDashboard() {
   if (!$("#view-dashboard")) return;
   const phase = computePhase(fmtDate(new Date()));
   $("#dashPhasePill").textContent = PHASE_LABELS[phase];
 
   const totalHours = tasksCache.reduce((s,t) => s + (t.hours||0), 0);
-  let daysLeft = "—";
+  const allDates = new Set(tasksCache.flatMap(taskDates));
+  const avgHours = allDates.size ? (totalHours / allDates.size).toFixed(1) : "0";
+
+  let daysLeft = "—", pctComplete = 0;
   if (settingsCache?.startDate) {
     const start = parseDate(settingsCache.startDate);
     const grcMonths = Number(settingsCache.grcMonths || 2);
     const phaseMonths = Number(settingsCache.phaseMonths || 2);
     const end = addMonths(addMonths(start, grcMonths), phaseMonths*2);
+    const totalSpan = end - start;
+    const elapsed = new Date() - start;
+    pctComplete = totalSpan > 0 ? Math.min(100, Math.max(0, Math.round(elapsed/totalSpan*100))) : 0;
     const diff = Math.ceil((end - new Date()) / 86400000);
     daysLeft = diff > 0 ? diff : 0;
   }
-  const allDates = new Set(tasksCache.flatMap(taskDates));
+
+  /* week-over-week comparison for KPI delta */
+  const today = new Date();
+  const thisWk = weekKey(fmtDate(today));
+  const lastWkDate = new Date(today); lastWkDate.setDate(lastWkDate.getDate()-7);
+  const lastWk = weekKey(fmtDate(lastWkDate));
+  const thisWkTasks = tasksCache.filter(t => taskWeekKeys(t).includes(thisWk)).length;
+  const lastWkTasks = tasksCache.filter(t => taskWeekKeys(t).includes(lastWk)).length;
+  const taskDelta = thisWkTasks - lastWkTasks;
+
+  const kpi = (label, num, delta) => `
+    <div class="kpi-box">
+      <div class="kpi-icon">${label}</div>
+      <div class="kpi-num">${num}</div>
+      ${delta !== undefined ? `<span class="kpi-delta ${delta>0?"up":delta<0?"down":"flat"}">${delta>0?"▲":delta<0?"▼":"—"} ${Math.abs(delta)} هذا الأسبوع</span>` : ""}
+    </div>`;
 
   $("#dashStats").innerHTML = `
-    <div class="stat-box"><div class="num">${tasksCache.length}</div><div class="lbl">إجمالي المهام</div></div>
-    <div class="stat-box"><div class="num">${totalHours}</div><div class="lbl">إجمالي الساعات</div></div>
-    <div class="stat-box"><div class="num">${allDates.size}</div><div class="lbl">أيام تم فيها تسجيل</div></div>
-    <div class="stat-box"><div class="num">${daysLeft}</div><div class="lbl">يوم متبقٍ في البرنامج</div></div>
+    <div class="kpi-box"><div class="kpi-icon">إجمالي المهام</div><div class="kpi-num">${tasksCache.length}</div><div class="kpi-lbl">منذ بداية التدريب</div></div>
+    <div class="kpi-box"><div class="kpi-icon">إجمالي الساعات</div><div class="kpi-num">${totalHours}</div><div class="kpi-lbl">متوسط ${avgHours} س/يوم نشط</div></div>
+    <div class="kpi-box"><div class="kpi-icon">إنجاز البرنامج</div><div class="kpi-num">${pctComplete}%</div><div class="kpi-lbl">${daysLeft} يوم متبقٍ</div></div>
+    ${kpi("مهام هذا الأسبوع", thisWkTasks, taskDelta)}
   `;
 
-  /* week chart — last 8 ISO weeks */
-  const today = new Date();
-  const weekBuckets = [];
-  for (let i = 7; i >= 0; i--) {
+  /* ---- hours trend line chart (last 12 weeks) ---- */
+  const weekLabels = [], weekHours = [];
+  for (let i = 11; i >= 0; i--) {
     const d = new Date(today); d.setDate(d.getDate() - i*7);
-    weekBuckets.push(weekKey(fmtDate(d)));
+    const wk = weekKey(fmtDate(d));
+    weekLabels.push(wk.split("-W")[1]);
+    const hrs = tasksCache.filter(t => taskWeekKeys(t).includes(wk)).reduce((s,t)=>s+(t.hours||0),0);
+    weekHours.push(hrs);
   }
-  const uniqueWeeks = [...new Set(weekBuckets)];
-  const counts = uniqueWeeks.map(wk => tasksCache.filter(t => taskWeekKeys(t).includes(wk)).length);
-  const max = Math.max(1, ...counts);
-  $("#weekChart").innerHTML = `<div class="bar-chart">${uniqueWeeks.map((wk,i) => `
-    <div class="bar-col">
-      <div class="bar" style="height:${(counts[i]/max*100).toFixed(0)}%" title="${counts[i]} مهمة"></div>
-      <span class="bar-label">${wk.split("-W")[1]}</span>
-    </div>`).join("")}</div>`;
+  destroyChart("trend");
+  const accent = cssVar("--accent") || "#22d3a5";
+  charts.trend = new Chart($("#hoursTrendChart"), {
+    type: "line",
+    data: { labels: weekLabels, datasets: [{
+      data: weekHours, borderColor: accent, backgroundColor: accent + "22",
+      fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: accent, borderWidth: 2
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: cssVar("--text-dim"), font: { family: "JetBrains Mono", size: 10 } } },
+        y: { beginAtZero: true, grid: { color: cssVar("--border") }, ticks: { color: cssVar("--text-dim"), font: { size: 10 } } }
+      }
+    }
+  });
 
-  /* phase distribution */
+  /* ---- phase donut chart ---- */
   const byPhase = { grc: 0, blue: 0, red: 0, general: 0 };
   tasksCache.forEach(t => byPhase[t.phase] = (byPhase[t.phase]||0)+1);
-  const totalP = Math.max(1, tasksCache.length);
   const phaseOrder = [["grc","GRC"],["blue","Blue Team"],["red","Red Team"],["general","عام"]];
-  $("#phaseBar").innerHTML = `<div class="stacked-bar">${phaseOrder.map(([k,l]) =>
-    byPhase[k] ? `<div class="stacked-seg ${k}" style="width:${(byPhase[k]/totalP*100).toFixed(1)}%"></div>` : ""
-  ).join("")}</div>`;
-  $("#phaseLegend").innerHTML = phaseOrder.map(([k,l]) =>
-    `<span class="legend-item"><span class="legend-dot ${k}"></span>${l} — ${byPhase[k]||0}</span>`
-  ).join("");
+  destroyChart("donut");
+  charts.donut = new Chart($("#phaseDonutChart"), {
+    type: "doughnut",
+    data: {
+      labels: phaseOrder.map(([k,l])=>l),
+      datasets: [{
+        data: phaseOrder.map(([k])=>byPhase[k]||0),
+        backgroundColor: [cssVar("--grc"), cssVar("--blue"), cssVar("--red"), cssVar("--text-faint")],
+        borderColor: cssVar("--surface"), borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: "68%",
+      plugins: { legend: { position: "bottom", labels: { color: cssVar("--text-dim"), font: { size: 11 }, boxWidth: 10, padding: 12 } } }
+    }
+  });
 
-  /* heatmap — current month */
+  /* ---- top tools/skills bar chart ---- */
+  const toolCounts = {};
+  tasksCache.forEach(t => (t.tools||"").split(",").map(s=>s.trim()).filter(Boolean).forEach(tool => {
+    toolCounts[tool] = (toolCounts[tool]||0) + 1;
+  }));
+  const topTools = Object.entries(toolCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  destroyChart("tools");
+  charts.tools = new Chart($("#toolsBarChart"), {
+    type: "bar",
+    data: {
+      labels: topTools.map(([n])=>n),
+      datasets: [{ data: topTools.map(([,c])=>c), backgroundColor: accent, borderRadius: 4, maxBarThickness: 22 }]
+    },
+    options: {
+      indexAxis: "y", responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { beginAtZero: true, grid: { color: cssVar("--border") }, ticks: { color: cssVar("--text-dim"), font: { size: 10 }, precision: 0 } },
+        y: { grid: { display: false }, ticks: { color: cssVar("--text-dim"), font: { size: 11 } } }
+      }
+    }
+  });
+  if (!topTools.length) $("#toolsBarChart").parentElement.innerHTML = `<p style="color:var(--text-faint); font-size:13px;">سجّل الأدوات المستخدمة في مهامك لتظهر هنا.</p>`;
+
+  /* ---- week comparison bars ---- */
+  const thisWkHours = tasksCache.filter(t => taskWeekKeys(t).includes(thisWk)).reduce((s,t)=>s+(t.hours||0),0);
+  const lastWkHours = tasksCache.filter(t => taskWeekKeys(t).includes(lastWk)).reduce((s,t)=>s+(t.hours||0),0);
+  const maxCompare = Math.max(1, thisWkTasks, lastWkTasks, thisWkHours, lastWkHours);
+  const compareRow = (label, valA, valB) => `
+    <div class="week-compare-row">
+      <span class="week-compare-lbl">${label}</span>
+      <div class="week-compare-bars">
+        <div class="week-compare-bar-track"><div class="week-compare-bar-fill" style="width:${(valB/maxCompare*100).toFixed(0)}%; background:var(--text-faint);"></div></div>
+        <div class="week-compare-bar-track"><div class="week-compare-bar-fill" style="width:${(valA/maxCompare*100).toFixed(0)}%; background:var(--accent);"></div></div>
+      </div>
+      <span class="week-compare-val">${valA}</span>
+    </div>`;
+  $("#weekCompare").innerHTML = `
+    <div style="display:flex; gap:14px; font-size:11px; color:var(--text-faint); margin-bottom:8px; font-family:var(--font-mono);">
+      <span><span style="display:inline-block;width:8px;height:8px;background:var(--text-faint);border-radius:2px;"></span> الماضي</span>
+      <span><span style="display:inline-block;width:8px;height:8px;background:var(--accent);border-radius:2px;"></span> الحالي</span>
+    </div>
+    ${compareRow("عدد المهام", thisWkTasks, lastWkTasks)}
+    ${compareRow("الساعات", thisWkHours, lastWkHours)}
+  `;
+
+  /* ---- heatmap — current month ---- */
   const y = today.getFullYear(), m = today.getMonth();
   const daysInMonth = new Date(y, m+1, 0).getDate();
   let cells = "";
