@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>سجل التدريب التعاوني | Co-op Training Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body data-theme="terminal">
+
+<div class="bg-grid" aria-hidden="true"></div>
+
+<!-- ===== Login Gate ===== -->
+<div id="authGate" class="auth-gate">
+  <div class="auth-card">
+    <div class="auth-mark">S7G</div>
+    <h1 class="auth-title">سجل التدريب التعاوني</h1>
+    <p class="auth-sub">Co-op Training Log — GRC · Blue Team · Red Team</p>
+    <form id="authForm" class="auth-form">
+      <input type="email" id="authEmail" placeholder="البريد الإلكتروني" autocomplete="email" required>
+      <input type="password" id="authPassword" placeholder="كلمة المرور" autocomplete="current-password" required>
+      <button type="submit" id="authSubmit" class="btn btn-primary">دخول</button>
+      <button type="button" id="authRegisterBtn" class="btn btn-ghost">إنشاء حساب لأول مرة</button>
+    </form>
+    <p class="auth-error" id="authError"></p>
+    <p class="auth-hint">أول مرة؟ استخدم "إنشاء حساب" مرة واحدة بأي بريد وكلمة مرور تختارها — بعدها استخدم "دخول" فقط.</p>
+  </div>
+</div>
+
+<!-- ===== App Shell ===== -->
+<div id="app" class="app hidden">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">S7G</span>
+      <div class="brand-text">
+        <strong>سجل التدريب</strong>
+        <small>Co-op Log</small>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-btn active" data-view="dashboard">
+        <span class="nav-icon">▣</span> الرئيسية
+      </button>
+      <button class="nav-btn" data-view="log">
+        <span class="nav-icon">＋</span> تسجيل مهمة
+      </button>
+      <button class="nav-btn" data-view="todos">
+        <span class="nav-icon">☑</span> المهام والمواعيد
+      </button>
+      <button class="nav-btn" data-view="timeline">
+        <span class="nav-icon">◈</span> الخط الزمني
+      </button>
+      <button class="nav-btn" data-view="weekly">
+        <span class="nav-icon">▤</span> تقرير أسبوعي
+      </button>
+      <button class="nav-btn" data-view="monthly">
+        <span class="nav-icon">▦</span> تقرير شهري
+      </button>
+      <button class="nav-btn" data-view="final">
+        <span class="nav-icon">◆</span> التقرير الختامي
+      </button>
+      <button class="nav-btn" data-view="settings">
+        <span class="nav-icon">⚙</span> الإعدادات
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button id="themeToggle" class="theme-toggle" title="تبديل الهوية البصرية">
+        <span class="dot"></span> الهوية البصرية
+      </button>
+      <button id="langToggle" class="theme-toggle" title="Toggle report language">
+        <span class="dot"></span> EN / AR
+      </button>
+      <button id="logoutBtn" class="theme-toggle logout">تسجيل خروج</button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- Phase progress strip -->
+    <div class="phase-strip" id="phaseStrip">
+      <!-- injected by JS -->
+    </div>
+
+    <!-- DASHBOARD VIEW -->
+    <section class="view active" id="view-dashboard">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">نظرة سريعة</span>
+          <h2>الرئيسية</h2>
+        </div>
+        <div class="phase-pill" id="dashPhasePill">—</div>
+      </header>
+
+      <div class="stats-grid" id="dashStats"></div>
+
+      <div class="dash-grid">
+        <div class="card">
+          <h3 class="card-title">المهام آخر ٨ أسابيع</h3>
+          <div id="weekChart"></div>
+        </div>
+        <div class="card">
+          <h3 class="card-title">التوزيع حسب المرحلة</h3>
+          <div id="phaseBar"></div>
+          <div id="phaseLegend" class="phase-legend"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="heatmap-header">
+          <h3 class="card-title">أيام التسجيل — الشهر الحالي</h3>
+          <span class="streak-badge" id="streakBadge"></span>
+        </div>
+        <div id="heatmap" class="heatmap"></div>
+      </div>
+
+      <div class="recent-tasks">
+        <h3>آخر المهام المسجّلة</h3>
+        <div id="dashRecentList" class="task-list"></div>
+      </div>
+    </section>
+
+    <!-- LOG VIEW -->
+    <section class="view" id="view-log">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">اليوم</span>
+          <h2 id="todayLabel">—</h2>
+        </div>
+        <div class="phase-pill" id="currentPhasePill">—</div>
+      </header>
+
+      <form id="taskForm" class="task-form card">
+        <div class="field-grid">
+          <div class="field-row">
+            <label>التاريخ (أو تاريخ البداية)</label>
+            <input type="date" id="taskDate" required>
+          </div>
+          <div class="field-row">
+            <label>تاريخ الانتهاء <span class="opt">اختياري — إذا امتدت المهمة لعدة أيام</span></label>
+            <input type="date" id="taskEndDate">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label>القسم / المرحلة</label>
+          <select id="taskPhase">
+            <option value="grc">GRC</option>
+            <option value="blue">Blue Team</option>
+            <option value="red">Red Team</option>
+            <option value="general">عام / General</option>
+          </select>
+        </div>
+
+        <div class="field-grid">
+          <div class="field-row">
+            <label>عنوان المهمة (عربي)</label>
+            <input type="text" id="taskTitleAr" placeholder="مثال: مراجعة سياسات ضبط الوصول" required>
+          </div>
+          <div class="field-row">
+            <label>Task Title (English) <span class="opt">اختياري</span></label>
+            <input type="text" id="taskTitleEn" placeholder="e.g. Reviewed access control policies">
+          </div>
+        </div>
+
+        <div class="field-grid">
+          <div class="field-row">
+            <label>الوصف التفصيلي (عربي)</label>
+            <textarea id="taskDescAr" rows="3" placeholder="اشرح المهمة بشكل مختصر..."></textarea>
+          </div>
+          <div class="field-row">
+            <label>Description (English) <span class="opt">اختياري</span></label>
+            <textarea id="taskDescEn" rows="3" placeholder="Brief description..."></textarea>
+          </div>
+        </div>
+
+        <div class="field-grid field-grid-3">
+          <div class="field-row">
+            <label>الأدوات / المهارات</label>
+            <input type="text" id="taskTools" placeholder="مثال: Splunk, NIST CSF">
+          </div>
+          <div class="field-row">
+            <label>الوقت المستغرق (ساعة)</label>
+            <input type="number" id="taskHours" min="0" step="0.5" placeholder="2">
+          </div>
+          <div class="field-row">
+            <label>النتيجة / الإنجاز</label>
+            <input type="text" id="taskOutcome" placeholder="مثال: تم رفع التقرير للمشرف">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label>ملاحظات / تحديات <span class="opt">اختياري</span></label>
+          <textarea id="taskNotes" rows="2"></textarea>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">حفظ المهمة</button>
+          <span id="saveStatus" class="save-status"></span>
+        </div>
+      </form>
+
+      <div class="recent-tasks">
+        <h3>آخر المهام المسجّلة</h3>
+        <div id="recentList" class="task-list"></div>
+      </div>
+    </section>
+
+    <!-- TODOS VIEW -->
+    <section class="view" id="view-todos">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">تخطيط</span>
+          <h2>المهام والمواعيد</h2>
+        </div>
+      </header>
+
+      <form id="todoForm" class="task-form card">
+        <div class="field-grid field-grid-3">
+          <div class="field-row">
+            <label>عنوان المهمة</label>
+            <input type="text" id="todoTitle" placeholder="مثال: تجهيز عرض SOC L1" required>
+          </div>
+          <div class="field-row">
+            <label>المرحلة</label>
+            <select id="todoPhase">
+              <option value="grc">GRC</option>
+              <option value="blue">Blue Team</option>
+              <option value="red">Red Team</option>
+              <option value="general">عام / General</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label>الأولوية</label>
+            <select id="todoPriority">
+              <option value="high">عالية</option>
+              <option value="med" selected>متوسطة</option>
+              <option value="low">منخفضة</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-grid">
+          <div class="field-row">
+            <label>موعد التسليم <span class="opt">اختياري</span></label>
+            <input type="date" id="todoDeadline">
+          </div>
+          <div class="field-row">
+            <label>ملاحظات <span class="opt">اختياري</span></label>
+            <input type="text" id="todoNotes" placeholder="تفاصيل إضافية...">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">إضافة مهمة</button>
+          <span id="todoSaveStatus" class="save-status"></span>
+        </div>
+      </form>
+
+      <div class="subtabs">
+        <button class="subtab-btn active" data-subview="kanban">كانبان</button>
+        <button class="subtab-btn" data-subview="list">قائمة</button>
+        <button class="subtab-btn" data-subview="calendar">تقويم</button>
+      </div>
+
+      <div class="subview active" id="subview-kanban">
+        <div class="kanban">
+          <div class="kanban-col">
+            <h3 class="kanban-col-title">لم أبدأ</h3>
+            <div class="kanban-cards" id="kanbanTodo"></div>
+          </div>
+          <div class="kanban-col">
+            <h3 class="kanban-col-title">قيد التنفيذ</h3>
+            <div class="kanban-cards" id="kanbanProgress"></div>
+          </div>
+          <div class="kanban-col">
+            <h3 class="kanban-col-title">منجزة</h3>
+            <div class="kanban-cards" id="kanbanDone"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subview" id="subview-list">
+        <div class="card">
+          <div id="todoListView" class="task-list"></div>
+        </div>
+      </div>
+
+      <div class="subview" id="subview-calendar">
+        <div class="card">
+          <div class="heatmap-header">
+            <h3 class="card-title">مواعيد التسليم — الشهر الحالي</h3>
+          </div>
+          <div id="todoHeatmap" class="heatmap"></div>
+        </div>
+        <div class="card">
+          <h3 class="card-title">المواعيد القادمة</h3>
+          <div id="upcomingList" class="task-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TIMELINE VIEW -->
+    <section class="view" id="view-timeline">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">نظرة عامة</span>
+          <h2>الخط الزمني — 6 أشهر</h2>
+        </div>
+      </header>
+      <div class="card">
+        <div id="timelineViz"></div>
+      </div>
+      <div class="card">
+        <div id="statsGrid" class="stats-grid"></div>
+      </div>
+    </section>
+
+    <!-- WEEKLY VIEW -->
+    <section class="view" id="view-weekly">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">تقرير</span>
+          <h2>التقرير الأسبوعي</h2>
+        </div>
+        <select id="weekSelect" class="select-inline"></select>
+      </header>
+      <div id="weeklyReport" class="report-doc card"></div>
+      <div class="report-actions">
+        <button class="btn btn-ghost" onclick="window.print()">طباعة / حفظ PDF</button>
+      </div>
+    </section>
+
+    <!-- MONTHLY VIEW -->
+    <section class="view" id="view-monthly">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">تقرير</span>
+          <h2>التقرير الشهري</h2>
+        </div>
+        <select id="monthSelect" class="select-inline"></select>
+      </header>
+      <div id="monthlyReport" class="report-doc card"></div>
+      <div class="report-actions">
+        <button class="btn btn-ghost" onclick="window.print()">طباعة / حفظ PDF</button>
+      </div>
+    </section>
+
+    <!-- FINAL REPORT VIEW -->
+    <section class="view" id="view-final">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">التقرير النهائي</span>
+          <h2>التقرير الختامي الشامل</h2>
+        </div>
+      </header>
+      <div id="finalReport" class="report-doc card"></div>
+      <div class="report-actions">
+        <button class="btn btn-ghost" onclick="window.print()">طباعة / حفظ PDF</button>
+      </div>
+    </section>
+
+    <!-- SETTINGS VIEW -->
+    <section class="view" id="view-settings">
+      <header class="view-header">
+        <div>
+          <span class="eyebrow">إعدادات</span>
+          <h2>بيانات التدريب</h2>
+        </div>
+      </header>
+      <form id="settingsForm" class="task-form card">
+        <div class="field-grid">
+          <div class="field-row">
+            <label>الجامعة / الكلية (نص عام)</label>
+            <input type="text" id="setUni" placeholder="جامعة أم القرى - كلية الحوسبة">
+          </div>
+          <div class="field-row">
+            <label>اسم المتدرب</label>
+            <input type="text" id="setName" placeholder="سلمان ...">
+          </div>
+        </div>
+        <div class="field-grid field-grid-3">
+          <div class="field-row">
+            <label>الرقم الجامعي</label>
+            <input type="text" id="setId" placeholder="4XXXXXXXXX">
+          </div>
+          <div class="field-row">
+            <label>رقم الهاتف</label>
+            <input type="text" id="setPhone" placeholder="05XXXXXXXX">
+          </div>
+          <div class="field-row">
+            <label>البريد الإلكتروني</label>
+            <input type="email" id="setEmail" placeholder="name@st.uqu.edu.sa">
+          </div>
+        </div>
+        <div class="field-grid field-grid-3">
+          <div class="field-row">
+            <label>الكلية (الحقل الرسمي)</label>
+            <input type="text" id="setCollege" placeholder="كلية الحوسبة">
+          </div>
+          <div class="field-row">
+            <label>القسم</label>
+            <input type="text" id="setDept" placeholder="الأمن السيبراني">
+          </div>
+          <div class="field-row">
+            <label>التخصص</label>
+            <input type="text" id="setSpecialization" placeholder="أمن المعلومات">
+          </div>
+        </div>
+        <div class="field-grid">
+          <div class="field-row">
+            <label>جهة التدريب</label>
+            <input type="text" id="setOrg" placeholder="اسم الجهة">
+          </div>
+          <div class="field-row">
+            <label>المشرف</label>
+            <input type="text" id="setSupervisor" placeholder="اسم المشرف">
+          </div>
+        </div>
+        <div class="field-grid field-grid-3">
+          <div class="field-row">
+            <label>تاريخ بداية التدريب</label>
+            <input type="date" id="setStart" required>
+          </div>
+          <div class="field-row">
+            <label>مدة مرحلة GRC (أشهر)</label>
+            <input type="number" id="setGrcMonths" value="2" min="0" step="0.5">
+          </div>
+          <div class="field-row">
+            <label>مدة كل مرحلة (Blue/Red)</label>
+            <input type="number" id="setPhaseMonths" value="2" min="0" step="0.5">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">حفظ الإعدادات</button>
+          <span id="setSaveStatus" class="save-status"></span>
+        </div>
+      </form>
+
+      <div class="card danger-zone">
+        <h3>نسخة احتياطية</h3>
+        <p>صدّر جميع بياناتك كملف JSON احتياطي بشكل دوري.</p>
+        <button id="exportBtn" class="btn btn-ghost">تصدير نسخة احتياطية (JSON)</button>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Firebase SDKs -->
+<script type="module" src="js/firebase-config.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
