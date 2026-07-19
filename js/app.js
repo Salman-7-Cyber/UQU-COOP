@@ -4,7 +4,7 @@ import {
   onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
-  collection, doc, setDoc, addDoc, getDocs, getDoc, query, orderBy
+  collection, doc, setDoc, addDoc, getDocs, getDoc, query, orderBy, updateDoc, deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 /* ---------- constants ---------- */
@@ -14,6 +14,7 @@ const DAY_NAMES_AR = ["الأحد","الاثنين","الثلاثاء","الأر
 
 let currentUser = null;
 let tasksCache = [];
+let todosCache = [];
 let settingsCache = null;
 let reportLangPrimary = "ar"; // 'ar' | 'en'
 
@@ -42,6 +43,23 @@ function addMonths(date, n) {
   const d = new Date(date);
   d.setMonth(d.getMonth() + n);
   return d;
+}
+
+/* ---------- multi-day task helpers ---------- */
+function taskDates(t) {
+  const start = parseDate(t.date);
+  const end = t.endDate ? parseDate(t.endDate) : start;
+  const out = [];
+  let cur = new Date(start);
+  while (cur <= end) { out.push(fmtDate(cur)); cur.setDate(cur.getDate()+1); }
+  return out.length ? out : [t.date];
+}
+function taskWeekKeys(t) { return [...new Set(taskDates(t).map(weekKey))]; }
+function taskMonthKeys(t) { return [...new Set(taskDates(t).map(monthKey))]; }
+function taskSpanLabel(t) {
+  if (!t.endDate || t.endDate === t.date) return t.date;
+  const days = taskDates(t).length;
+  return `${t.date} → ${t.endDate} (${days} أيام)`;
 }
 
 /* ---------- phase calculation ---------- */
@@ -108,6 +126,7 @@ onAuthStateChanged(auth, async (user) => {
     $("#app").classList.remove("hidden");
     await loadSettings();
     await loadTasks();
+    await loadTodos();
     initDateDefaults();
     renderAll();
   } else {
@@ -122,11 +141,18 @@ async function loadSettings() {
   const ref = doc(db, "users", currentUser.uid, "meta", "settings");
   const snap = await getDoc(ref);
   settingsCache = snap.exists() ? snap.data() : {
-    name: "", studentId: "", org: "", supervisor: "",
+    uni: "", name: "", studentId: "", phone: "", email: "",
+    college: "", dept: "", specialization: "", org: "", supervisor: "",
     startDate: fmtDate(new Date()), grcMonths: 2, phaseMonths: 2
   };
+  $("#setUni").value = settingsCache.uni || "";
   $("#setName").value = settingsCache.name || "";
   $("#setId").value = settingsCache.studentId || "";
+  $("#setPhone").value = settingsCache.phone || "";
+  $("#setEmail").value = settingsCache.email || "";
+  $("#setCollege").value = settingsCache.college || "";
+  $("#setDept").value = settingsCache.dept || "";
+  $("#setSpecialization").value = settingsCache.specialization || "";
   $("#setOrg").value = settingsCache.org || "";
   $("#setSupervisor").value = settingsCache.supervisor || "";
   $("#setStart").value = settingsCache.startDate || fmtDate(new Date());
@@ -137,8 +163,14 @@ async function loadSettings() {
 $("#settingsForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   settingsCache = {
+    uni: $("#setUni").value.trim(),
     name: $("#setName").value.trim(),
     studentId: $("#setId").value.trim(),
+    phone: $("#setPhone").value.trim(),
+    email: $("#setEmail").value.trim(),
+    college: $("#setCollege").value.trim(),
+    dept: $("#setDept").value.trim(),
+    specialization: $("#setSpecialization").value.trim(),
     org: $("#setOrg").value.trim(),
     supervisor: $("#setSupervisor").value.trim(),
     startDate: $("#setStart").value,
@@ -161,8 +193,10 @@ async function loadTasks() {
 
 $("#taskForm").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const endDateVal = $("#taskEndDate").value;
   const entry = {
     date: $("#taskDate").value,
+    endDate: endDateVal && endDateVal >= $("#taskDate").value ? endDateVal : "",
     phase: $("#taskPhase").value,
     titleAr: $("#taskTitleAr").value.trim(),
     titleEn: $("#taskTitleEn").value.trim(),
@@ -192,6 +226,150 @@ $("#taskDate").addEventListener("change", () => {
   $("#taskPhase").value = computePhase($("#taskDate").value);
 });
 
+/* ---------- FIRESTORE: todos ---------- */
+async function loadTodos() {
+  const q = query(collection(db, "users", currentUser.uid, "todos"), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+  todosCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+$("#todoForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const entry = {
+    titleAr: $("#todoTitle").value.trim(),
+    phase: $("#todoPhase").value,
+    priority: $("#todoPriority").value,
+    deadline: $("#todoDeadline").value || "",
+    notes: $("#todoNotes").value.trim(),
+    status: "todo",
+    createdAt: Date.now(),
+  };
+  if (!entry.titleAr) return;
+  await addDoc(collection(db, "users", currentUser.uid, "todos"), entry);
+  $("#todoForm").reset();
+  $("#todoPriority").value = "med";
+  $("#todoSaveStatus").textContent = "تم الحفظ ✓";
+  setTimeout(() => $("#todoSaveStatus").textContent = "", 2000);
+  await loadTodos();
+  renderTodos();
+});
+
+async function moveTodo(id, newStatus) {
+  const t = todosCache.find(x => x.id === id);
+  if (!t) return;
+  const wasDone = t.status === "done";
+  await updateDoc(doc(db, "users", currentUser.uid, "todos", id), { status: newStatus });
+  if (newStatus === "done" && !wasDone) {
+    await addDoc(collection(db, "users", currentUser.uid, "tasks"), {
+      date: fmtDate(new Date()),
+      endDate: "",
+      phase: t.phase,
+      titleAr: t.titleAr,
+      titleEn: "",
+      descAr: t.notes || "",
+      descEn: "",
+      tools: "",
+      hours: 0,
+      outcome: "تم إنجازها من قائمة المهام",
+      notes: "",
+      createdAt: Date.now(),
+    });
+    await loadTasks();
+    renderAll();
+  }
+  await loadTodos();
+  renderTodos();
+}
+
+async function deleteTodo(id) {
+  await deleteDoc(doc(db, "users", currentUser.uid, "todos", id));
+  await loadTodos();
+  renderTodos();
+}
+window.moveTodo = moveTodo;
+window.deleteTodo = deleteTodo;
+
+const PRIORITY_LABELS = { high: "عالية", med: "متوسطة", low: "منخفضة" };
+const PRIORITY_RANK = { high: 0, med: 1, low: 2 };
+
+function todoCardHTML(t) {
+  const today = fmtDate(new Date());
+  const overdue = t.deadline && t.deadline < today && t.status !== "done";
+  const prevStatus = { in_progress: "todo", done: "in_progress" }[t.status];
+  const nextStatus = { todo: "in_progress", in_progress: "done" }[t.status];
+  return `
+  <div class="todo-card ${t.phase} ${t.status === "done" ? "done" : ""}">
+    <div class="todo-card-title">${escapeHTML(t.titleAr)}</div>
+    ${t.notes ? `<div class="todo-card-notes">${escapeHTML(t.notes)}</div>` : ""}
+    <div class="todo-card-meta">
+      <span class="priority-badge priority-${t.priority}">${PRIORITY_LABELS[t.priority]}</span>
+      <span class="tag">${PHASE_LABELS[t.phase]}</span>
+      ${t.deadline ? `<span class="deadline-tag ${overdue ? "overdue" : ""}">${overdue ? "متأخرة — " : ""}${t.deadline}</span>` : ""}
+    </div>
+    <div class="todo-card-actions">
+      ${prevStatus ? `<button class="todo-mini-btn" onclick="moveTodo('${t.id}','${prevStatus}')">⬅ رجوع</button>` : ""}
+      ${nextStatus ? `<button class="todo-mini-btn" onclick="moveTodo('${t.id}','${nextStatus}')">التالي ➡</button>` : ""}
+      <button class="todo-mini-btn danger" onclick="deleteTodo('${t.id}')">حذف</button>
+    </div>
+  </div>`;
+}
+
+/* ---------- TODOS NAV / SUBTABS ---------- */
+$$(".subtab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    $$(".subtab-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    $$(".subview").forEach(v => v.classList.remove("active"));
+    $(`#subview-${btn.dataset.subview}`).classList.add("active");
+  });
+});
+
+function renderTodos() {
+  if (!$("#view-todos")) return;
+  const active = todosCache.filter(t => t.status !== "done");
+  const done = todosCache.filter(t => t.status === "done");
+
+  $("#kanbanTodo").innerHTML = todosCache.filter(t => t.status === "todo").map(todoCardHTML).join("") || emptyState();
+  $("#kanbanProgress").innerHTML = todosCache.filter(t => t.status === "in_progress").map(todoCardHTML).join("") || emptyState();
+  $("#kanbanDone").innerHTML = done.map(todoCardHTML).join("") || emptyState();
+
+  const sorted = [...active].sort((a,b) => {
+    const da = a.deadline || "9999-99-99", db_ = b.deadline || "9999-99-99";
+    if (da !== db_) return da.localeCompare(db_);
+    return PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+  });
+  const listHTML = (t) => {
+    const today = fmtDate(new Date());
+    const overdue = t.deadline && t.deadline < today;
+    return `<div class="todo-list-item ${t.status === "done" ? "done" : ""}">
+      <span class="status-dot ${t.status}"></span>
+      <span class="todo-list-title">${escapeHTML(t.titleAr)}</span>
+      <span class="tag">${PHASE_LABELS[t.phase]}</span>
+      <span class="priority-badge priority-${t.priority}">${PRIORITY_LABELS[t.priority]}</span>
+      ${t.deadline ? `<span class="deadline-tag ${overdue ? "overdue" : ""}">${t.deadline}</span>` : ""}
+    </div>`;
+  };
+  $("#todoListView").innerHTML = [...sorted, ...done].map(listHTML).join("") || emptyState();
+
+  /* calendar */
+  const today = new Date();
+  const y = today.getFullYear(), m = today.getMonth();
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const deadlineMap = {};
+  todosCache.forEach(t => { if (t.deadline) (deadlineMap[t.deadline] ||= []).push(t); });
+  let cells = "";
+  for (let day = 1; day <= daysInMonth; day++) {
+    const ds = fmtDate(new Date(y, m, day));
+    const has = !!deadlineMap[ds];
+    const overdue = has && ds < fmtDate(today) && deadlineMap[ds].some(t => t.status !== "done");
+    cells += `<div class="heat-cell ${has ? "active" : ""} ${overdue ? "tag-span" : ""}" title="${ds}${has ? " — " + deadlineMap[ds].map(t=>t.titleAr).join(", ") : ""}"></div>`;
+  }
+  $("#todoHeatmap").innerHTML = cells;
+
+  const upcoming = active.filter(t => t.deadline && t.deadline >= fmtDate(today)).sort((a,b) => a.deadline.localeCompare(b.deadline)).slice(0,8);
+  $("#upcomingList").innerHTML = upcoming.map(listHTML).join("") || `<p style="color:var(--text-faint); font-size:13px;">لا توجد مواعيد قادمة.</p>`;
+}
+
 /* ---------- NAV ---------- */
 $$(".nav-btn").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -200,6 +378,8 @@ $$(".nav-btn").forEach(btn => {
     const view = btn.dataset.view;
     $$(".view").forEach(v => v.classList.remove("active"));
     $(`#view-${view}`).classList.add("active");
+    if (view === "dashboard") renderDashboard();
+    if (view === "todos") renderTodos();
     if (view === "timeline") renderTimeline();
     if (view === "weekly") renderWeeklySelect();
     if (view === "monthly") renderMonthlySelect();
@@ -231,6 +411,7 @@ function renderAll() {
   renderTodayHeader();
   renderPhaseStrip();
   renderRecentTasks();
+  renderDashboard();
 }
 
 function renderTodayHeader() {
@@ -278,18 +459,94 @@ function taskItemHTML(t) {
   <div class="task-item ${t.phase}">
     <div class="task-item-top">
       <span class="task-item-title">${escapeHTML(t.titleAr)}</span>
-      <span class="task-item-meta">${t.date}</span>
+      <span class="task-item-meta">${taskSpanLabel(t)}</span>
     </div>
     ${t.descAr ? `<div class="task-item-desc">${escapeHTML(t.descAr)}</div>` : ""}
     <div class="task-item-tags">
       <span class="tag">${PHASE_LABELS[t.phase]}</span>
       ${t.hours ? `<span class="tag">${t.hours} ساعة</span>` : ""}
       ${t.tools ? `<span class="tag">${escapeHTML(t.tools)}</span>` : ""}
+      ${t.endDate && t.endDate !== t.date ? `<span class="tag tag-span">مهمة ممتدة</span>` : ""}
     </div>
   </div>`;
 }
 function escapeHTML(s) {
   return (s||"").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+}
+
+/* ---------- DASHBOARD ---------- */
+function renderDashboard() {
+  if (!$("#view-dashboard")) return;
+  const phase = computePhase(fmtDate(new Date()));
+  $("#dashPhasePill").textContent = PHASE_LABELS[phase];
+
+  const totalHours = tasksCache.reduce((s,t) => s + (t.hours||0), 0);
+  let daysLeft = "—";
+  if (settingsCache?.startDate) {
+    const start = parseDate(settingsCache.startDate);
+    const grcMonths = Number(settingsCache.grcMonths || 2);
+    const phaseMonths = Number(settingsCache.phaseMonths || 2);
+    const end = addMonths(addMonths(start, grcMonths), phaseMonths*2);
+    const diff = Math.ceil((end - new Date()) / 86400000);
+    daysLeft = diff > 0 ? diff : 0;
+  }
+  const allDates = new Set(tasksCache.flatMap(taskDates));
+
+  $("#dashStats").innerHTML = `
+    <div class="stat-box"><div class="num">${tasksCache.length}</div><div class="lbl">إجمالي المهام</div></div>
+    <div class="stat-box"><div class="num">${totalHours}</div><div class="lbl">إجمالي الساعات</div></div>
+    <div class="stat-box"><div class="num">${allDates.size}</div><div class="lbl">أيام تم فيها تسجيل</div></div>
+    <div class="stat-box"><div class="num">${daysLeft}</div><div class="lbl">يوم متبقٍ في البرنامج</div></div>
+  `;
+
+  /* week chart — last 8 ISO weeks */
+  const today = new Date();
+  const weekBuckets = [];
+  for (let i = 7; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i*7);
+    weekBuckets.push(weekKey(fmtDate(d)));
+  }
+  const uniqueWeeks = [...new Set(weekBuckets)];
+  const counts = uniqueWeeks.map(wk => tasksCache.filter(t => taskWeekKeys(t).includes(wk)).length);
+  const max = Math.max(1, ...counts);
+  $("#weekChart").innerHTML = `<div class="bar-chart">${uniqueWeeks.map((wk,i) => `
+    <div class="bar-col">
+      <div class="bar" style="height:${(counts[i]/max*100).toFixed(0)}%" title="${counts[i]} مهمة"></div>
+      <span class="bar-label">${wk.split("-W")[1]}</span>
+    </div>`).join("")}</div>`;
+
+  /* phase distribution */
+  const byPhase = { grc: 0, blue: 0, red: 0, general: 0 };
+  tasksCache.forEach(t => byPhase[t.phase] = (byPhase[t.phase]||0)+1);
+  const totalP = Math.max(1, tasksCache.length);
+  const phaseOrder = [["grc","GRC"],["blue","Blue Team"],["red","Red Team"],["general","عام"]];
+  $("#phaseBar").innerHTML = `<div class="stacked-bar">${phaseOrder.map(([k,l]) =>
+    byPhase[k] ? `<div class="stacked-seg ${k}" style="width:${(byPhase[k]/totalP*100).toFixed(1)}%"></div>` : ""
+  ).join("")}</div>`;
+  $("#phaseLegend").innerHTML = phaseOrder.map(([k,l]) =>
+    `<span class="legend-item"><span class="legend-dot ${k}"></span>${l} — ${byPhase[k]||0}</span>`
+  ).join("");
+
+  /* heatmap — current month */
+  const y = today.getFullYear(), m = today.getMonth();
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  let cells = "";
+  for (let day = 1; day <= daysInMonth; day++) {
+    const ds = fmtDate(new Date(y, m, day));
+    const active = allDates.has(ds);
+    const isFuture = new Date(y,m,day) > today;
+    cells += `<div class="heat-cell ${active ? "active" : ""} ${isFuture ? "future" : ""}" title="${ds}"></div>`;
+  }
+  $("#heatmap").innerHTML = cells;
+
+  let streak = 0;
+  let cur = new Date(today);
+  if (!allDates.has(fmtDate(cur))) cur.setDate(cur.getDate()-1);
+  while (allDates.has(fmtDate(cur))) { streak++; cur.setDate(cur.getDate()-1); }
+  $("#streakBadge").textContent = streak > 0 ? `🔥 ${streak} يوم متتالي` : "ابدأ اليوم!";
+
+  $("#dashRecentList").innerHTML = tasksCache.slice(0,5).map(taskItemHTML).join("") ||
+    `<p style="color:var(--text-faint); font-size:13px;">لا توجد مهام مسجّلة بعد.</p>`;
 }
 
 /* ---------- TIMELINE + STATS ---------- */
@@ -314,7 +571,7 @@ function renderTimeline() {
 
 /* ---------- WEEKLY REPORT ---------- */
 function renderWeeklySelect() {
-  const weeks = [...new Set(tasksCache.map(t => weekKey(t.date)))].sort().reverse();
+  const weeks = [...new Set(tasksCache.flatMap(taskWeekKeys))].sort().reverse();
   $("#weekSelect").innerHTML = weeks.map(w => `<option value="${w}">${w}</option>`).join("") ||
     `<option value="">لا توجد بيانات</option>`;
   $("#weekSelect").onchange = () => renderWeeklyReport($("#weekSelect").value);
@@ -322,7 +579,7 @@ function renderWeeklySelect() {
   else $("#weeklyReport").innerHTML = emptyState();
 }
 function renderWeeklyReport(wk) {
-  const items = tasksCache.filter(t => weekKey(t.date) === wk).sort((a,b)=>a.date.localeCompare(b.date));
+  const items = tasksCache.filter(t => taskWeekKeys(t).includes(wk)).sort((a,b)=>a.date.localeCompare(b.date));
   $("#weeklyReport").innerHTML = buildReportDoc({
     titleAr: `التقرير الأسبوعي — ${wk}`, titleEn: `Weekly Report — ${wk}`,
     items, periodLabel: wk
@@ -331,7 +588,7 @@ function renderWeeklyReport(wk) {
 
 /* ---------- MONTHLY REPORT ---------- */
 function renderMonthlySelect() {
-  const months = [...new Set(tasksCache.map(t => monthKey(t.date)))].sort().reverse();
+  const months = [...new Set(tasksCache.flatMap(taskMonthKeys))].sort().reverse();
   $("#monthSelect").innerHTML = months.map(m => `<option value="${m}">${m}</option>`).join("") ||
     `<option value="">لا توجد بيانات</option>`;
   $("#monthSelect").onchange = () => renderMonthlyReport($("#monthSelect").value);
@@ -339,7 +596,7 @@ function renderMonthlySelect() {
   else $("#monthlyReport").innerHTML = emptyState();
 }
 function renderMonthlyReport(mk) {
-  const items = tasksCache.filter(t => monthKey(t.date) === mk).sort((a,b)=>a.date.localeCompare(b.date));
+  const items = tasksCache.filter(t => taskMonthKeys(t).includes(mk)).sort((a,b)=>a.date.localeCompare(b.date));
   $("#monthlyReport").innerHTML = buildReportDoc({
     titleAr: `التقرير الشهري — ${mk}`, titleEn: `Monthly Report — ${mk}`,
     items, periodLabel: mk
@@ -368,11 +625,7 @@ function renderFinalReport() {
   $("#finalReport").innerHTML = `
     ${docHeader("التقرير الختامي للتدريب التعاوني", "Final Cooperative Training Report")}
     <div class="doc-meta">
-      ${settingsCache?.name ? `المتدرب: ${escapeHTML(settingsCache.name)} · ` : ""}
-      ${settingsCache?.studentId ? `الرقم الجامعي: ${escapeHTML(settingsCache.studentId)} · ` : ""}
-      ${settingsCache?.org ? `الجهة: ${escapeHTML(settingsCache.org)} · ` : ""}
-      ${settingsCache?.supervisor ? `المشرف: ${escapeHTML(settingsCache.supervisor)} · ` : ""}
-      الفترة: ${dateRange}
+      فترة التدريب: ${dateRange} · إجمالي المهام: ${items.length} · إجمالي الساعات: ${totalHours}
     </div>
     <h2>الملخص التنفيذي / Executive Summary</h2>
     <p>على مدار فترة التدريب التعاوني، تم إنجاز <strong>${items.length}</strong> مهمة بإجمالي <strong>${totalHours}</strong> ساعة عمل موزعة على ثلاث مراحل رئيسية: الحوكمة والمخاطر والامتثال (GRC)، والفريق الأزرق (Blue Team)، والفريق الأحمر (Red Team).</p>
@@ -388,7 +641,31 @@ function emptyState() {
 }
 
 function docHeader(titleAr, titleEn) {
-  return `<h1>${titleAr}</h1><p style="color:var(--text-dim); font-size:13px; margin-bottom:14px;">${titleEn}</p>`;
+  const today = fmtDate(new Date());
+  return `
+  <img src="assets/uqu-letterhead.png" alt="جامعة أم القرى" class="letterhead-banner">
+  <div class="letterhead-title">
+    <h1>${titleAr}</h1>
+    <p class="title-en">${titleEn}</p>
+  </div>
+  <table class="letterhead-info">
+    <tr>
+      <td><strong>الاسم / Name</strong><br>${escapeHTML(settingsCache?.name || "—")}</td>
+      <td><strong>الرقم الجامعي / University No.</strong><br>${escapeHTML(settingsCache?.studentId || "—")}</td>
+    </tr>
+    <tr>
+      <td><strong>رقم الهاتف / Phone</strong><br>${escapeHTML(settingsCache?.phone || "—")}</td>
+      <td><strong>البريد الإلكتروني / Email</strong><br>${escapeHTML(settingsCache?.email || "—")}</td>
+    </tr>
+    <tr>
+      <td><strong>القسم / Department</strong><br>${escapeHTML(settingsCache?.dept || "—")}</td>
+      <td><strong>الكلية / College</strong><br>${escapeHTML(settingsCache?.college || "—")}</td>
+    </tr>
+    <tr>
+      <td><strong>التخصص / Specialization</strong><br>${escapeHTML(settingsCache?.specialization || "—")}</td>
+      <td><strong>تاريخ الإصدار / Issue Date</strong><br>${today}</td>
+    </tr>
+  </table>`;
 }
 
 function tasksTable(items) {
@@ -398,7 +675,7 @@ function tasksTable(items) {
     <tbody>
       ${items.map(t => `
         <tr>
-          <td>${t.date}</td>
+          <td>${taskSpanLabel(t)}</td>
           <td>${PHASE_LABELS[t.phase]}</td>
           <td>
             <div class="lang-block">
@@ -430,7 +707,6 @@ function buildReportDoc({ titleAr, titleEn, items, periodLabel }) {
   return `
     ${docHeader(titleAr, titleEn)}
     <div class="doc-meta">
-      ${settingsCache?.name ? `المتدرب: ${escapeHTML(settingsCache.name)} · ` : ""}
       ${items.length} مهمة · ${totalHours} ساعة · ${phaseSummary}
     </div>
     <h2>ملخص الفترة / Period Summary</h2>
